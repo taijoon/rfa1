@@ -1,0 +1,22 @@
+7e 45  0 ff ff  0  b  a 11 70  1 19  0  0  a  0 10  0  a 80 fa e5 7e time  = 90
+
+7e 45  0 ff ff  0  b  a 11 70  1 1a  0  0  a  0  f  0  a 80 f7  7 7e time  = 92
+
+7e 45  0 ff ff  0  a  a 11 70  1 1b  0  0  a  0  0  0  b 80 6a 70 7e time  = 95
+
+7e 45  0 ff ff  0  a  a 11 70  1 1c  0  0  a  0  0  0  b 80 c1 c1 7e time  = 97
+
+7e 45  0 ff ff  0  b  a 11 70  1 1b  0  0  a  0  f  0  a 8c 58 2d 7e time  = 99
+
+7e 45  0 ff ff  0  b  8 11 60 12 34  0  6  0  0  0  0 3e 3d 7e time  = 101
+
+7e 45  0 ff ff  0  a  a 11 70  1 1d  0  0  a  0  0  0  b 8c 6e eb 7e time  = 102
+
+7e 45  0 ff ff  0  b  a 11 70  1 1c  0  0  a  0  f  0  a 8c f3 9c 7e time  = 105
+
+7e 45  0 ff ff  0  b  a 11 70  1 1d  0  0  a  0  f  0  a 8c d0 77 7e time  = 108
+
+7e 45  0 ff ff  0  a  a 11 70  1 1e  0  0  a  0  0  0  b 8c 2a c6 7e time  = 110
+
+7e 45  0 ff ff  0  b  a 11 70  1 1e  0  0  a  0  f  0  a 8c 94 5a 7e time  = 111
+

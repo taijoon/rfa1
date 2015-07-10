@@ -1,0 +1,16 @@
+(1)
+/opt/tinyos-2.x/tos/chips/cc2420/transmit/CC2420TransmitP.nc, 768
+#warning CC2420 TX Buffer underflow flush modifed. 2014.09
+      if (status & CC2420_STATUS_TX_UNDERFLOW){
+        *(volatile uint8_t *)49U ^= 0x01 <<5;
+			  call SFLUSHTX.strobe();
+      }
+
+(2)
+.../Yggdrasil/net/ctp/CtpForwardingEngineP.nc, 445
+#ifndef FX
+    #warning entering nonFXmode : use setState(SENDING)
+	  setState(SENDING);
+#endif
+	  return;
+	}

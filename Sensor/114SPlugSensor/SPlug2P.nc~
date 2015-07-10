@@ -1,0 +1,391 @@
+#include "Timer.h"
+#include "../../Yggdrasil.h"
+#include "Serial.h"
+#include "./Command.h"
+
+module SPlug2P {
+  provides {
+    interface SensorControl as SPlugControl;
+#if WIFIPLUG
+    interface ATCMD;
+#endif
+  }
+  uses {
+    interface ADE7763 as Spi;
+    interface Timer<TMilli>;
+    interface Timer<TMilli> as eTimer;
+    interface Timer<TMilli> as tTimer;
+    interface Leds;
+    interface GeneralIO;
+    interface BusyWait<TMicro,uint16_t> as BusyWait;
+
+    interface SplitControl as RadioControl;
+    interface StdControl as RoutingControl;
+#if WIFIPLUG
+    interface AMSend;
+#else
+    interface Send;
+#endif
+
+		interface ConfigStorage as Config;
+		interface Mount as Mount;
+ 
+//    interface AutoOn;
+
+    interface GpioInterrupt as BTN20I;
+    interface GeneralIO as BTN20G;
+  }
+}
+
+implementation {
+#if WIFIPLUG
+  task void AMsendData(); 
+#else
+  task void sendData(); 
+#endif
+
+	typedef struct config_t {
+		uint32_t accumulate;
+		uint32_t overcount;
+	} config_t;
+
+  message_t sendbuf;
+  bool sendbusy=FALSE;
+  uint32_t interval;
+  norace splug2_oscilloscope_t local;
+  norace uint8_t dataStatus=0;			//Get Data from ADE
+  bool readBusy = FALSE;	
+	uint32_t watt=0, accumulate = 0;
+	uint16_t per=0;
+	uint16_t on5=0, on1=0,cnt5=0, cnt1=0;
+  uint16_t received_command = 0;
+	norace config_t conf;
+	norace uint8_t edge = 2;
+
+  command error_t SPlugControl.start(base_info_t* nodeInfo) {
+    memcpy(&local.info, nodeInfo, sizeof(base_info_t));   
+    local.info.type = SPLUG2_OSCILLOSCOPE;
+
+		if(call Mount.mount() != SUCCESS) {
+		}
+
+    if (call RadioControl.start() != SUCCESS)
+			;
+    if (call RoutingControl.start() != SUCCESS)
+			;
+
+    call Spi.init();
+
+    call Spi.cs_high();
+    call Spi.cs_low();
+    call Spi.writeCommand(0x8f);
+    call Spi.cs_high();
+
+    call BTN20G.makeInput();
+    call BTN20G.set();
+		call BusyWait.wait(10);
+    call BTN20G.clr();
+    call BTN20I.enableFallingEdge();
+		edge = 2;
+
+    call GeneralIO.makeOutput();
+    call GeneralIO.set();
+
+    return SUCCESS;	
+  }
+
+  command error_t SPlugControl.stop() {
+ 		call Timer.stop();
+ 		call eTimer.stop();
+ 		call tTimer.stop();
+    return SUCCESS;
+  }
+
+//	task void btn_fired();
+	norace uint16_t timetick=0;
+	uint32_t power_out=0;
+  async event void BTN20I.fired() {
+		power_out = 0;
+		call BTN20I.disable();
+//		post btn_fired();
+//	}
+
+//	task void btn_fired(){
+		if(edge == 1){
+			if(timetick < 20){
+	  	  call BTN20G.clr();
+				if(call GeneralIO.get() == 0){
+					call Leds.led2On();
+					call GeneralIO.set();
+				}
+				else{
+					call Leds.led2Off();
+					call GeneralIO.clr();
+				}
+			}
+			else if(timetick < 40){
+#if WIFIPLUG
+    		call Timer.stop();
+    		call eTimer.stop();
+    		call tTimer.stop();
+    		signal ATCMD.wps();
+#endif
+			}
+			else if(timetick < 80){
+				conf.accumulate = local.accumulate = 0;
+				conf.overcount = local.overcount = 0;
+				call Config.write(0, &conf, sizeof(conf));
+			}
+			else {
+			}
+			call tTimer.stop();
+			call Leds.led0Off();
+			call Leds.led1Off();
+		}
+		else if (edge == 0){
+	  	call BTN20G.clr();
+			call BTN20I.disable();
+			timetick=0;
+			call tTimer.startPeriodic(256);
+		}
+		call eTimer.startOneShot(512);
+	}
+
+  event void tTimer.fired(){
+		timetick++;
+		if(timetick > 80) // 20 sec
+			call Leds.set(0);
+		else if(timetick > 40) // 10 sec
+			call Leds.led0On();
+		else if(timetick > 20) // 5sec
+			call Leds.led1On();
+	}
+
+  event void eTimer.fired(){
+		if(edge == 0){
+			edge = 1;
+    	call BTN20I.enableRisingEdge();
+		}
+		else{
+			edge = 0;
+    	call BTN20I.enableFallingEdge();
+		}
+	}
+
+  void setTimer(uint32_t repeat) {
+    if(repeat == 0)
+      interval = DEFAULT_INTERVAL;
+    else
+      interval = repeat;
+    if (call Timer.isRunning()) call Timer.stop();
+  }
+
+  command error_t SPlugControl.repeatTimer(uint32_t repeat) {
+    setTimer(SPLUG_INTERVAL);
+		per = SPLUG_INTERVAL/1024;
+		on5 = 300/per;
+    on1 = 60/per;
+    call Timer.startPeriodic(interval);
+    return SUCCESS;	
+  }
+
+  command error_t SPlugControl.oneShotTimer(uint32_t repeat) {
+    setTimer(repeat);
+    call Timer.startOneShot(interval);
+    return SUCCESS;
+  }
+
+  event void RadioControl.startDone(error_t error) {
+  }
+
+  event void RadioControl.stopDone(error_t error) { }
+
+	uint8_t state = 0, o_state = 0;
+
+  event void Timer.fired(){
+    readBusy = FALSE;
+    {
+      readBusy = TRUE;
+      call Spi.cs_low();
+      call Spi.writeData(0x16, CURRENT_SIZE);
+      dataStatus = 1;
+			call Leds.led1Toggle();
+    }
+		if(local.info.count < 5){
+    	call GeneralIO.set();
+		}
+		
+		if(call GeneralIO.get() == 1){
+			call Leds.led2On();
+		}
+		else{
+			call Leds.led2Off();
+		}
+
+		state = call GeneralIO.get();
+		local.info.battery = state;
+    local.info.count++;
+  }
+
+	uint32_t o_watt=0;
+	uint32_t o_watt_2=0;
+  event void Spi.readData(nx_uint8_t* rx_buf, uint8_t len) {
+    if(dataStatus == 1)	{ //
+      call Spi.cs_high();
+      dataStatus = 2;
+      call Spi.cs_low();
+      call Spi.writeData(0x03, RAENERGY_SIZE);
+		}
+    else if(dataStatus == 2) {	//
+      call Spi.cs_high();
+			{
+				o_watt = 0;
+				o_watt = (rx_buf[0]*256*256) + (rx_buf[1]*256) + (rx_buf[2]);
+				if(o_watt > 60000){
+					o_watt = 0;
+					local.watt = o_watt;
+				}
+				//else if(o_watt < 74){
+				else if(o_watt < 37){
+					o_watt = 0;
+					local.watt = o_watt;
+					power_out++;
+					//if(power_out >= 150)
+    				//call GeneralIO.clr();
+				}
+				else if(o_watt < 130){
+					o_watt = 666*o_watt * 4 / per;
+					o_watt = o_watt / 100;	// 700 => 7.00watt
+					local.watt = o_watt;
+				}
+				else if(o_watt < 500){
+					o_watt = 631*o_watt * 4 / per;
+					o_watt = o_watt / 100;	// 700 => 7.00watt
+					local.watt = o_watt;
+				}
+				else if(o_watt < 29400){
+					o_watt = 598*o_watt * 4 / per;
+					o_watt = o_watt / 100;	// 700 => 7.00watt
+					local.watt = o_watt;
+				}
+				else {
+    				call GeneralIO.clr();
+				}
+					o_watt = o_watt * 278 * per;
+					o_watt = o_watt / 10000;		// 700 => 7watt/hour
+					o_watt_2 = local.accumulate;
+					local.accumulate += o_watt;
+
+				if(local.accumulate < o_watt_2)
+					local.overcount++;
+      	dataStatus = 0;
+			}
+
+			if((local.info.count % 10) == 0) {
+				conf.accumulate = local.accumulate;
+				conf.overcount = local.overcount;
+				call Config.write(0, &conf, sizeof(conf));
+			}
+
+      dataStatus = 0;
+    }
+
+    if(dataStatus == 0) {
+      call Spi.cs_high();
+			if(local.info.count > 2){
+#if WIFIPLUG
+				post AMsendData();
+#else
+	      post sendData();
+#endif
+			}
+      readBusy = FALSE;
+    }
+  }
+
+#if WIFIPLUG
+  event void AMSend.sendDone(message_t* msg, error_t error) {
+    sendbusy = FALSE;
+  }
+
+  task void AMsendData() {
+    splug2_oscilloscope_t *o;
+    o = (splug2_oscilloscope_t *)call AMSend.getPayload(&sendbuf, sizeof(splug2_oscilloscope_t));
+    if (o == NULL) {
+      return;
+    }
+
+    memcpy(o, &local, sizeof(local));
+
+    if (call AMSend.send(0xffff, &sendbuf, sizeof(local)) == SUCCESS) {
+      sendbusy = TRUE;
+    }
+  }
+#else
+  event void Send.sendDone(message_t* msg, error_t error) {
+    sendbusy = FALSE;
+  }
+
+  task void sendData() {
+    splug2_oscilloscope_t *o;
+    o = (splug2_oscilloscope_t *)call Send.getPayload(&sendbuf, sizeof(splug2_oscilloscope_t));
+    if (o == NULL) {
+      return;
+    }
+
+    memcpy(o, &local, sizeof(local));
+
+    if (call Send.send(&sendbuf, sizeof(local)) == SUCCESS) {
+      sendbusy = TRUE;
+    }
+  }
+#endif
+	event void Config.readDone(storage_addr_t addr, void* buf, 
+		storage_len_t len, error_t err) __attribute__((noinline)) {
+
+		if(err == SUCCESS){
+			memcpy(&conf, buf, len);
+
+			if(conf.accumulate < 0)
+				local.accumulate = 0;
+			else
+				local.accumulate = conf.accumulate;
+			if(conf.overcount < 0 )
+				conf.overcount = 0;
+			else
+				local.overcount = conf.overcount;
+		}
+	}
+
+	event void Config.writeDone(storage_addr_t addr, void * buf, 
+		storage_len_t len, error_t err) {
+		if(err == SUCCESS) {
+			if(call Config.commit() != SUCCESS) {
+			}
+		}
+	}
+
+	event void Config.commitDone(error_t err) {
+	}
+
+	event void Mount.mountDone(error_t error) {
+		if(error == SUCCESS) {
+			if(call Config.valid() == TRUE) {
+				if(call Config.read(0, &conf, sizeof(conf)) != SUCCESS) {
+				}
+			}
+			else {
+				if(call Config.commit() == SUCCESS) {
+				}
+			}
+		}
+	}
+/*
+  event void AutoOn.AutoOnControl(){
+     //received_command = 1;
+     //cnt1=0;
+     cnt5=0;
+  }
+*/
+}
+
